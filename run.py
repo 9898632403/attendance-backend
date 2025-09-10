@@ -16,7 +16,11 @@ ADMIN_PASSWORD = "admin123"  # default admin password
 # ----------------- Flask app -----------------
 app = Flask(__name__)
 app.config["SECRET_KEY"] = SECRET_KEY
-CORS(app, supports_credentials=True, origins=["http://localhost:5173"])
+CORS(app, supports_credentials=True, origins=[
+    "http://localhost:5173",
+    "https://attendance-dxh2xvtsh-9898632403s-projects.vercel.app"
+])
+
 
 # ----------------- MongoDB connection -----------------
 try:
