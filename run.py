@@ -16,11 +16,9 @@ ADMIN_PASSWORD = "admin123"  # default admin password
 # ----------------- Flask app -----------------
 app = Flask(__name__)
 app.config["SECRET_KEY"] = SECRET_KEY
-CORS(app, supports_credentials=True, origins=[
-    "http://localhost:5173",
-    "https://attendance-dxh2xvtsh-9898632403s-projects.vercel.app",
-    "https://attendance-hx8q66zby-9898632403s-projects.vercel.app"
-])
+# This allows any frontend origin (quick fix)
+CORS(app, supports_credentials=True)
+
 
 
 
