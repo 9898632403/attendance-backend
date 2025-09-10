@@ -22,18 +22,24 @@ CORS(app, supports_credentials=True, origins=["http://localhost:5173"])
 try:
     client = MongoClient(
         MONGO_URI,
-        tlsCAFile=certifi.where(),
-        serverSelectionTimeoutMS=10000
+        serverSelectionTimeoutMS=10000  # 10 second timeout
     )
+    # Test the connection
     client.admin.command("ping")
-    db = client.get_database()
+    
+    # Define collections
+    db = client.get_database()  # Default DB from URI
     users_col = db["users"]
     timetable_col = db["timetable"]
-    sessions_col = db["sessions"]     # { sessionId, faculty_email, active, current_token, token_expiry }
-    attendance_col = db["attendance"] # { sessionId, student_email, timestamp }
+    sessions_col = db["sessions"]
+    attendance_col = db["attendance"]
+
     print("✅ MongoDB connected successfully")
-except Exception as e:
+except errors.ServerSelectionTimeoutError as e:
     print("❌ MongoDB connection error:", e)
+    # Define collections as None to prevent NameError
+    users_col = timetable_col = sessions_col = attendance_col = None
+
 
 # ----------------- Auto-create admin if not exists -----------------
 for admin_email in ADMIN_EMAILS:
