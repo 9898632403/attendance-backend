@@ -543,7 +543,97 @@ def attendance_scan():
         print("❌ Attendance scan error:", e)
         return jsonify({"error": "Internal server error"}), 500
     
+# ---------- Get all students (Admin only) ----------
+@app.route("/api/admin/students", methods=["GET"])
+def get_all_students():
+    try:
+        # Verify admin
+        admin_email = request.headers.get("X-User-Email")
+        if not admin_email or admin_email not in ADMIN_EMAILS:
+            return jsonify({"error": "Unauthorized"}), 403
+
+        students = list(users_col.find(
+            {"role": "student"}, 
+            {"_id": 0, "password": 0}
+        ))
+        return jsonify(students), 200
+    except Exception as e:
+        print("❌ Get all students error:", e)
+        return jsonify({"error": "Internal server error"}), 500
+
+# ---------- Get all faculty (Admin only) ----------
+@app.route("/api/admin/faculty", methods=["GET"])
+def get_all_faculty():
+    try:
+        # Verify admin
+        admin_email = request.headers.get("X-User-Email")
+        if not admin_email or admin_email not in ADMIN_EMAILS:
+            return jsonify({"error": "Unauthorized"}), 403
+
+        faculty = list(users_col.find(
+            {"role": "faculty"}, 
+            {"_id": 0, "password": 0}
+        ))
+        return jsonify(faculty), 200
+    except Exception as e:
+        print("❌ Get all faculty error:", e)
+        return jsonify({"error": "Internal server error"}), 500
+
+# ---------- Delete user (Admin only) ----------
+@app.route("/api/admin/user/<email>", methods=["DELETE"])
+def delete_user(email):
+    try:
+        # Verify admin
+        admin_email = request.headers.get("X-User-Email")
+        if not admin_email or admin_email not in ADMIN_EMAILS:
+            return jsonify({"error": "Unauthorized"}), 403
+
+        # Prevent admin from deleting themselves
+        if email in ADMIN_EMAILS:
+            return jsonify({"error": "Cannot delete admin accounts"}), 400
+
+        result = users_col.delete_one({"email": email})
+        if result.deleted_count == 0:
+            return jsonify({"error": "User not found"}), 404
+
+        return jsonify({"message": "User deleted successfully"}), 200
+    except Exception as e:
+        print("❌ Delete user error:", e)
+        return jsonify({"error": "Internal server error"}), 500
+
+# ---------- Update user (Admin only) ----------
+@app.route("/api/admin/user/<email>", methods=["PUT"])
+def update_user(email):
+    try:
+        # Verify admin
+        admin_email = request.headers.get("X-User-Email")
+        if not admin_email or admin_email not in ADMIN_EMAILS:
+            return jsonify({"error": "Unauthorized"}), 403
+
+        data = request.json
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        # Remove fields that shouldn't be updated
+        update_data = {k: v for k, v in data.items() if k not in ["_id", "email", "created_at"]}
         
+        # If updating password, hash it
+        if "password" in update_data and update_data["password"]:
+            hashed_pw = bcrypt.hashpw(update_data["password"].encode("utf-8"), bcrypt.gensalt())
+            update_data["password"] = hashed_pw
+        
+        result = users_col.update_one(
+            {"email": email},
+            {"$set": update_data}
+        )
+        
+        if result.matched_count == 0:
+            return jsonify({"error": "User not found"}), 404
+
+        return jsonify({"message": "User updated successfully"}), 200
+    except Exception as e:
+        print("❌ Update user error:", e)
+        return jsonify({"error": "Internal server error"}), 500        
 
 # ----------------- Run -----------------
 if __name__ == "__main__":
