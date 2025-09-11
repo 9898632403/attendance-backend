@@ -101,81 +101,39 @@ def login():
 # ---------- Enroll User (Admin only) ----------
 @app.route("/api/enroll", methods=["POST"])
 def enroll_user():
-    try:
-        data = request.json
-        admin_email = data.get("admin_email")
-        if admin_email not in ADMIN_EMAILS:
-            return jsonify({"error": "Unauthorized"}), 403
+    data = request.json
+    admin_email = data.get("admin_email")
+    
+    if admin_email not in ADMIN_EMAILS:
+        return jsonify({"error": "Unauthorized"}), 403
 
-        name = data.get("name")
-        email = data.get("email")
-        password = data.get("password")
-        role = data.get("role")  # student or faculty
-        extra_info = data.get("extra_info", {})
+    name = data.get("name")
+    email = data.get("email")
+    password = data.get("password")
+    role = data.get("role")
+    extra_info = data.get("extra_info", {})
 
-        if not name or not email or not password or not role:
-            return jsonify({"error": "Missing required fields"}), 400
+    if not all([name, email, password, role]):
+        return jsonify({"error": "Missing fields"}), 400
 
-        # ✅ check if email already exists
-        if users_col.find_one({"email": email}):
-            return jsonify({"error": "User already exists"}), 400
+    if users_collection.find_one({"email": email}):
+        return jsonify({"error": "User already exists"}), 400
 
-        hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+    hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
 
-        user_data = {
-            "name": name.strip(),
-            "email": email.strip().lower(),
-            "password": hashed_pw,
-            "role": role,
-            "created_at": datetime.datetime.utcnow()
-        }
+    user_data = {
+        "name": name,
+        "email": email,
+        "password": hashed_password,
+        "role": role,
+        "extra_info": extra_info
+    }
 
-        if role == "student":
-            branch = extra_info.get("branch")
-            sem = extra_info.get("sem")
-            mobile = extra_info.get("mobile")
+    inserted_id = users_collection.insert_one(user_data).inserted_id
+    user_data["_id"] = str(inserted_id)
+    del user_data["password"]  # don't send password back
 
-            if not branch or not sem or not mobile:
-                return jsonify({"error": "Missing student fields"}), 400
-
-            # ✅ student ke liye branchCode bana rahe (e.g. BBA-2)
-            branch_code = f"{branch}-{sem}"
-            user_data["extra_info"] = {
-                "branch": branch,
-                "sem": sem,
-                "branchCode": branch_code,
-                "mobile": mobile
-            }
-
-        elif role == "faculty":
-            subjects = extra_info.get("subjects", [])
-            if not subjects:
-                return jsonify({"error": "Faculty must have subjects"}), 400
-
-            # ✅ faculty ke liye unique facultyCode bana rahe
-            faculty_code = f"FAC-{secrets.token_hex(3)}"
-            user_data["extra_info"] = {
-                "subjects": subjects,
-                "facultyCode": faculty_code
-            }
-
-        # Save in DB
-        users_col.insert_one(user_data)
-
-        return jsonify({
-            "message": f"{role} created successfully",
-            "user": {
-                "name": user_data["name"],
-                "email": user_data["email"],
-                "role": user_data["role"],
-                "extra_info": user_data["extra_info"]
-            }
-        }), 201
-
-    except Exception as e:
-        print("❌ Enroll error:", e)
-        return jsonify({"error": "Internal server error"}), 500
-
+    return jsonify({"message": f"{name} enrolled successfully", "user": user_data}), 201
 @app.route("/api/faculties", methods=["GET"])
 def get_faculties():
     try:
@@ -543,63 +501,7 @@ def attendance_scan():
         print("❌ Attendance scan error:", e)
         return jsonify({"error": "Internal server error"}), 500
     
-# ---------- Get all students (Admin only) ----------
-@app.route("/api/admin/students", methods=["GET"])
-def get_all_students():
-    try:
-        # Verify admin
-        admin_email = request.headers.get("X-User-Email")
-        if not admin_email or admin_email not in ADMIN_EMAILS:
-            return jsonify({"error": "Unauthorized"}), 403
-
-        students = list(users_col.find(
-            {"role": "student"}, 
-            {"_id": 0, "password": 0}
-        ))
-        return jsonify(students), 200
-    except Exception as e:
-        print("❌ Get all students error:", e)
-        return jsonify({"error": "Internal server error"}), 500
-
-# ---------- Get all faculty (Admin only) ----------
-@app.route("/api/admin/faculty", methods=["GET"])
-def get_all_faculty():
-    try:
-        # Verify admin
-        admin_email = request.headers.get("X-User-Email")
-        if not admin_email or admin_email not in ADMIN_EMAILS:
-            return jsonify({"error": "Unauthorized"}), 403
-
-        faculty = list(users_col.find(
-            {"role": "faculty"}, 
-            {"_id": 0, "password": 0}
-        ))
-        return jsonify(faculty), 200
-    except Exception as e:
-        print("❌ Get all faculty error:", e)
-        return jsonify({"error": "Internal server error"}), 500
-
-# ---------- Delete user (Admin only) ----------
-@app.route("/api/admin/user/<email>", methods=["DELETE"])
-def delete_user(email):
-    try:
-        # Verify admin
-        admin_email = request.headers.get("X-User-Email")
-        if not admin_email or admin_email not in ADMIN_EMAILS:
-            return jsonify({"error": "Unauthorized"}), 403
-
-        # Prevent admin from deleting themselves
-        if email in ADMIN_EMAILS:
-            return jsonify({"error": "Cannot delete admin accounts"}), 400
-
-        result = users_col.delete_one({"email": email})
-        if result.deleted_count == 0:
-            return jsonify({"error": "User not found"}), 404
-
-        return jsonify({"message": "User deleted successfully"}), 200
-    except Exception as e:
-        print("❌ Delete user error:", e)
-        return jsonify({"error": "Internal server error"}), 500        
+        
 
 # ----------------- Run -----------------
 if __name__ == "__main__":
