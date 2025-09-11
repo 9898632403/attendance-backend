@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 import os, bcrypt, jwt, datetime, certifi
 import secrets
 from bson.objectid import ObjectId
-from pymongo import errors
 
 # ----------------- Load env -----------------
 load_dotenv()
@@ -345,20 +344,11 @@ def reset_live(branch, semester):
 @app.route("/api/users", methods=["GET"])
 def get_users():
     try:
-        user_email = request.headers.get("X-User-Email")
-        user_role = request.headers.get("role")
-        if not user_email or not user_role or user_role != "admin":
-            return jsonify({"error": "Unauthorized"}), 403
-
-        users = list(db.users.find({}))
-        for u in users:
-            u["_id"] = str(u["_id"])  # convert ObjectId
-        return jsonify(users)
-
+        users = list(users_col.find({}, {"_id": 0, "password": 0}))  # hide passwords
+        return jsonify(users), 200
     except Exception as e:
-        print("Error fetching users:", e)  # <— check your server logs
+        print("❌ Get users error:", e)
         return jsonify({"error": "Internal server error"}), 500
-
     
     
 def _generate_token_and_expiry(ttl_seconds=45):
@@ -453,29 +443,6 @@ def get_students_by_branch_sem(branch, semester):
     except Exception as e:
         print("❌ Get students error:", e)
         return jsonify({"error": "Internal server error"}), 500
- 
-@app.route("/api/faculties", methods=["GET"])
-def get_faculties():
-    try:
-        user_email = request.headers.get("X-User-Email")
-        role = request.headers.get("role")
-        if not user_email or role != "admin":
-            return jsonify({"error": "Unauthorized"}), 403
-
-        faculties = list(users_col.find({"role": "faculty"}, {"name": 1, "extra_info": 1}))
-        # Convert nested ObjectIds if any
-        for f in faculties:
-            f["_id"] = str(f.get("_id", ""))
-            if "extra_info" in f:
-                for k, v in f["extra_info"].items():
-                    if isinstance(v, ObjectId):
-                        f["extra_info"][k] = str(v)
-        return jsonify(faculties), 200
-
-    except Exception as e:
-        print("❌ Fetch faculties error:", e)
-        return jsonify({"error": "Internal server error"}), 500
-    
 
 
 # ---------- Get attendance for a branch + semester ----------
