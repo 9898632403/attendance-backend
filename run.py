@@ -181,62 +181,20 @@ def enroll_user():
 @app.route("/api/timetables", methods=["GET"])
 def get_all_timetables():
     try:
-        # Return full lectures object, not just branch/semester
         timetables = list(timetable_col.find({}, {"_id": 0}))
-        # Ensure isLive exists for each lecture
-        for t in timetables:
-            lectures = t.get("lectures", {})
-            for day, slots in lectures.items():
-                for slot, lec in slots.items():
-                    if "isLive" not in lec:
-                        lec["isLive"] = False
         return jsonify(timetables), 200
     except Exception as e:
         print("❌ Get all timetables error:", e)
         return jsonify({"error": "Internal server error"}), 500
 
-
-@app.route("/api/timetable/<branch>/<semester>/live", methods=["PATCH"])
-def set_live_lecture(branch, semester):
-    data = request.json
-    lecture_id = data.get("lectureId")
-    if not lecture_id:
-        return jsonify({"error": "Missing lectureId"}), 400
-
-    timetable = timetable_col.find_one({"branchCode": branch, "semester": semester})
-    if not timetable:
-        return jsonify({"error": "Timetable not found"}), 404
-
-    lectures = timetable.get("lectures", {})
-    for day, slots in lectures.items():
-        for slot, lec in slots.items():
-            lec["isLive"] = (lec.get("id") == lecture_id)
-
-    timetable_col.update_one(
-        {"branchCode": branch, "semester": semester},
-        {"$set": {"lectures": lectures}}
-    )
-
-    return jsonify({"message": "Lecture live status updated"}), 200
-
-
-
 # ---------- Get timetable by branch + semester ----------
 @app.route("/api/timetable/<branch>/<semester>", methods=["GET"])
 def get_timetable_by_branch_sem(branch, semester):
     try:
-        # Normalize input
-        branch = branch.strip()
-        semester = str(semester).strip()
-
         timetable = timetable_col.find_one(
-            {
-                "branchCode": {"$regex": f"^{branch}$", "$options": "i"},
-                "semester": semester
-            },
+            {"branchCode": branch.strip(), "semester": str(semester).strip()},
             {"_id": 0}
         )
-
         if not timetable:
             return jsonify({"error": "Timetable not found"}), 404
         return jsonify(timetable), 200
@@ -244,63 +202,71 @@ def get_timetable_by_branch_sem(branch, semester):
         print("❌ Get timetable error:", e)
         return jsonify({"error": "Internal server error"}), 500
 
-
 # ---------- Create or update timetable ----------
 @app.route("/api/timetable", methods=["POST"])
 def create_or_update_timetable():
     try:
-        data = request.json
         user_email = request.headers.get("X-User-Email")
         user_role = request.headers.get("role")
-
-        if not user_email or not user_role or user_role != "admin":
+        if user_role != "admin":
             return jsonify({"error": "Unauthorized"}), 403
 
+        data = request.json
         branch = data.get("branchCode", "").strip()
         semester = str(data.get("semester", "")).strip()
         lectures = data.get("lectures")
-
         if not branch or not semester or not lectures:
             return jsonify({"error": "Missing required fields"}), 400
 
-        # Verify admin exists
-        if not users_col.find_one({"email": user_email, "role": "admin"}):
-            return jsonify({"error": "Unauthorized"}), 403
-
-        # Upsert timetable
         timetable_col.update_one(
             {"branchCode": branch, "semester": semester},
             {"$set": {"lectures": lectures}},
             upsert=True
         )
-
         return jsonify({"message": "Timetable saved successfully"}), 201
-
     except Exception as e:
         print("❌ Create/Update timetable error:", e)
         return jsonify({"error": "Internal server error"}), 500
-    
-@app.route("/api/timetable/<branch>/<semester>/live", methods=["GET"])
-def get_live_lecture(branch, semester):
-    timetable = timetable_col.find_one(
-        {"branchCode": branch, "semester": semester},
-        {"_id": 0}
-    )
+
+# ---------- Set live lecture ----------
+@app.route("/api/timetable/<branch>/<semester>/live", methods=["PATCH"])
+def set_live_lecture(branch, semester):
+    data = request.json
+    lecture_day = data.get("day")
+    if not lecture_day:
+        return jsonify({"error": "Missing lecture day"}), 400
+
+    timetable = timetable_col.find_one({"branchCode": branch, "semester": semester})
     if not timetable:
         return jsonify({"error": "Timetable not found"}), 404
 
     lectures = timetable.get("lectures", {})
-    live_lecture = None
-    for day, slots in lectures.items():
-        for slot, lec in slots.items():
-            if lec.get("isLive"):
-                live_lecture = lec
-                break
-        if live_lecture:
-            break
+    for day in lectures:
+        lectures[day] = lectures[day] if day == lecture_day else lectures[day]
+        # mark only this day's lecture as live
+        lectures[day] = {"subject": lectures[day], "isLive": day == lecture_day}
 
+    timetable_col.update_one(
+        {"branchCode": branch, "semester": semester},
+        {"$set": {"lectures": lectures}}
+    )
+    return jsonify({"message": "Live lecture updated"}), 200
+
+# ---------- Get live lecture ----------
+@app.route("/api/timetable/<branch>/<semester>/live", methods=["GET"])
+def get_live_lecture(branch, semester):
+    timetable = timetable_col.find_one({"branchCode": branch, "semester": semester}, {"_id": 0})
+    if not timetable:
+        return jsonify({"error": "Timetable not found"}), 404
+    lectures = timetable.get("lectures", {})
+    live_lecture = None
+    for day, lec in lectures.items():
+        if isinstance(lec, dict) and lec.get("isLive"):
+            live_lecture = {"day": day, "subject": lec.get("subject")}
+            break
     return jsonify(live_lecture or {}), 200
 
+# ---------- Reset live lectures ----------
 @app.route("/api/timetable/<branch>/<semester>/reset-live", methods=["PATCH"])
 def reset_live(branch, semester):
     timetable = timetable_col.find_one({"branchCode": branch, "semester": semester})
@@ -308,19 +274,12 @@ def reset_live(branch, semester):
         return jsonify({"error": "Timetable not found"}), 404
 
     lectures = timetable.get("lectures", {})
-    for day, slots in lectures.items():
-        for slot, lec in slots.items():
-            lec["isLive"] = False
+    for day in lectures:
+        if isinstance(lectures[day], dict):
+            lectures[day]["isLive"] = False
 
-    timetable_col.update_one(
-        {"branchCode": branch, "semester": semester},
-        {"$set": {"lectures": lectures}}
-    )
+    timetable_col.update_one({"branchCode": branch, "semester": semester}, {"$set": {"lectures": lectures}})
     return jsonify({"message": "All lectures reset"}), 200
-    
-
-
-
 # ---------- Get All Users (optional for admin) ----------
 @app.route("/api/users", methods=["GET"])
 def get_users():
