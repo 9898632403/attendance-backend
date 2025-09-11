@@ -176,6 +176,22 @@ def enroll_user():
         print("❌ Enroll error:", e)
         return jsonify({"error": "Internal server error"}), 500
 
+@app.route("/api/faculties", methods=["GET"])
+def get_faculties():
+    try:
+        # optional: authentication
+        user_email = request.headers.get("X-User-Email")
+        role = request.headers.get("role")
+        if not user_email or role != "admin":
+            return jsonify({"error": "Unauthorized"}), 403
+
+        faculties = list(users_col.find({"role": "faculty"}, {"name": 1, "extra_info": 1}))
+        return jsonify(faculties), 200
+
+    except Exception as e:
+        print("❌ Fetch faculties error:", e)
+        return jsonify({"error": "Internal server error"}), 500
+
 # ---------- Timetable Routes ----------
 # ---------- Timetable Routes ----------
 
