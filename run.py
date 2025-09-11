@@ -599,40 +599,6 @@ def delete_user(email):
         return jsonify({"message": "User deleted successfully"}), 200
     except Exception as e:
         print("❌ Delete user error:", e)
-        return jsonify({"error": "Internal server error"}), 500
-
-# ---------- Update user (Admin only) ----------
-@app.route("/api/admin/user/<email>", methods=["PUT"])
-def update_user(email):
-    try:
-        # Verify admin
-        admin_email = request.headers.get("X-User-Email")
-        if not admin_email or admin_email not in ADMIN_EMAILS:
-            return jsonify({"error": "Unauthorized"}), 403
-
-        data = request.json
-        if not data:
-            return jsonify({"error": "No data provided"}), 400
-
-        # Remove fields that shouldn't be updated
-        update_data = {k: v for k, v in data.items() if k not in ["_id", "email", "created_at"]}
-        
-        # If updating password, hash it
-        if "password" in update_data and update_data["password"]:
-            hashed_pw = bcrypt.hashpw(update_data["password"].encode("utf-8"), bcrypt.gensalt())
-            update_data["password"] = hashed_pw
-        
-        result = users_col.update_one(
-            {"email": email},
-            {"$set": update_data}
-        )
-        
-        if result.matched_count == 0:
-            return jsonify({"error": "User not found"}), 404
-
-        return jsonify({"message": "User updated successfully"}), 200
-    except Exception as e:
-        print("❌ Update user error:", e)
         return jsonify({"error": "Internal server error"}), 500        
 
 # ----------------- Run -----------------
