@@ -175,6 +175,35 @@ def enroll_user():
 
 # ---------- Timetable Routes ----------
 # ---------- Timetable Routes ----------
+# ---------- Get all students (Admin only) ----------
+@app.route("/api/admin/students", methods=["GET"])
+def get_students():
+    try:
+        admin_email = request.headers.get("X-User-Email")
+        if admin_email not in ADMIN_EMAILS:
+            return jsonify({"error": "Unauthorized"}), 403
+
+        students = list(users_col.find({"role": "student"}, {"_id": 0, "password": 0}))
+        return jsonify(students), 200
+    except Exception as e:
+        print("❌ Get students error:", e)
+        return jsonify({"error": "Internal server error"}), 500
+
+
+# ---------- Get all faculty (Admin only) ----------
+@app.route("/api/admin/faculty", methods=["GET"])
+def get_faculty():
+    try:
+        admin_email = request.headers.get("X-User-Email")
+        if admin_email not in ADMIN_EMAILS:
+            return jsonify({"error": "Unauthorized"}), 403
+
+        faculty = list(users_col.find({"role": "faculty"}, {"_id": 0, "password": 0}))
+        return jsonify(faculty), 200
+    except Exception as e:
+        print("❌ Get faculty error:", e)
+        return jsonify({"error": "Internal server error"}), 500
+
 
 # Get all branch+semester timetables (for admin dashboard dropdown)
 # ---------- Get all branch+semester timetables ----------
