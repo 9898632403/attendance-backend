@@ -5,6 +5,8 @@ from pymongo import MongoClient
 from bson.objectid import ObjectId
 from dotenv import load_dotenv
 import os, bcrypt, certifi
+import jwt
+import datetime
 
 load_dotenv()
 
@@ -52,6 +54,37 @@ def enroll_user():
     user_doc["_id"] = str(res.inserted_id)
     user_doc.pop("password")
     return jsonify({"message": "User enrolled successfully", "user": user_doc})
+
+@app.route("/api/login", methods=["POST"])
+def login():
+    data = request.get_json()
+    email = data.get("email")
+    password = data.get("password")
+
+    user = users_col.find_one({"email": email})
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    if not bcrypt.checkpw(password.encode("utf-8"), user["password"]):
+        return jsonify({"error": "Invalid password"}), 401
+
+    # Remove password before sending back
+    user_info = {
+        "_id": str(user["_id"]),
+        "name": user["name"],
+        "email": user["email"],
+        "role": user["role"],
+        "extra_info": user.get("extra_info", {})
+    }
+
+    # Generate JWT token
+    token = jwt.encode(
+        {"user_id": str(user["_id"]), "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=12)},
+        SECRET_KEY,
+        algorithm="HS256"
+    )
+
+    return jsonify({"user": user_info, "token": token})
 
 # ---------------- Get all students ----------------
 @app.route("/api/admin/students", methods=["GET"])
