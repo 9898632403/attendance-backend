@@ -342,12 +342,35 @@ def reset_live(branch, semester):
 
 # ---------- Get All Users (optional for admin) ----------
 @app.route("/api/users", methods=["GET"])
-def get_users():
+def get_all_users():
     try:
-        users = list(users_col.find({}, {"_id": 0, "password": 0}))  # hide passwords
+        user_email = request.headers.get("X-User-Email")
+        role = request.headers.get("role")
+        if not user_email or role != "admin":
+            return jsonify({"error": "Unauthorized"}), 403
+
+        users = list(users_col.find({}, {"password": 0}))  # exclude passwords
         return jsonify(users), 200
     except Exception as e:
-        print("❌ Get users error:", e)
+        print("❌ Fetch users error:", e)
+        return jsonify({"error": "Internal server error"}), 500
+
+# Delete user
+@app.route("/api/users/<user_id>", methods=["DELETE"])
+def delete_user(user_id):
+    try:
+        user_email = request.headers.get("X-User-Email")
+        role = request.headers.get("role")
+        if not user_email or role != "admin":
+            return jsonify({"error": "Unauthorized"}), 403
+
+        result = users_col.delete_one({"_id": ObjectId(user_id)})
+        if result.deleted_count == 0:
+            return jsonify({"error": "User not found"}), 404
+
+        return jsonify({"message": "User deleted successfully"}), 200
+    except Exception as e:
+        print("❌ Delete user error:", e)
         return jsonify({"error": "Internal server error"}), 500
     
     
