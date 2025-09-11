@@ -63,6 +63,7 @@ def home():
     return jsonify({"message": "Backend is running"}), 200
 
 # ---------- Login ----------
+# ---------- Login ----------
 @app.route("/api/login", methods=["POST"])
 def login():
     try:
@@ -88,7 +89,8 @@ def login():
         user_data = {
             "name": user.get("name"),
             "email": user.get("email"),
-            "role": user.get("role", "student")
+            "role": user.get("role", "student"),
+            "extra_info": user.get("extra_info", {})  # ✅ add this
         }
 
         return jsonify({"user": user_data, "token": token}), 200
@@ -114,21 +116,62 @@ def enroll_user():
         if not name or not email or not password or not role:
             return jsonify({"error": "Missing required fields"}), 400
 
+        # ✅ check if email already exists
         if users_col.find_one({"email": email}):
             return jsonify({"error": "User already exists"}), 400
 
         hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
 
         user_data = {
-            "name": name,
-            "email": email,
+            "name": name.strip(),
+            "email": email.strip().lower(),
             "password": hashed_pw,
             "role": role,
-            "extra_info": extra_info
+            "created_at": datetime.datetime.utcnow()
         }
 
+        if role == "student":
+            branch = extra_info.get("branch")
+            sem = extra_info.get("sem")
+            mobile = extra_info.get("mobile")
+
+            if not branch or not sem or not mobile:
+                return jsonify({"error": "Missing student fields"}), 400
+
+            # ✅ student ke liye branchCode bana rahe (e.g. BBA-2)
+            branch_code = f"{branch}-{sem}"
+            user_data["extra_info"] = {
+                "branch": branch,
+                "sem": sem,
+                "branchCode": branch_code,
+                "mobile": mobile
+            }
+
+        elif role == "faculty":
+            subjects = extra_info.get("subjects", [])
+            if not subjects:
+                return jsonify({"error": "Faculty must have subjects"}), 400
+
+            # ✅ faculty ke liye unique facultyCode bana rahe
+            faculty_code = f"FAC-{secrets.token_hex(3)}"
+            user_data["extra_info"] = {
+                "subjects": subjects,
+                "facultyCode": faculty_code
+            }
+
+        # Save in DB
         users_col.insert_one(user_data)
-        return jsonify({"message": f"{role} created successfully"}), 201
+
+        return jsonify({
+            "message": f"{role} created successfully",
+            "user": {
+                "name": user_data["name"],
+                "email": user_data["email"],
+                "role": user_data["role"],
+                "extra_info": user_data["extra_info"]
+            }
+        }), 201
+
     except Exception as e:
         print("❌ Enroll error:", e)
         return jsonify({"error": "Internal server error"}), 500
@@ -239,6 +282,45 @@ def create_or_update_timetable():
     except Exception as e:
         print("❌ Create/Update timetable error:", e)
         return jsonify({"error": "Internal server error"}), 500
+    
+@app.route("/api/timetable/<branch>/<semester>/live", methods=["GET"])
+def get_live_lecture(branch, semester):
+    timetable = timetable_col.find_one(
+        {"branchCode": branch, "semester": semester},
+        {"_id": 0}
+    )
+    if not timetable:
+        return jsonify({"error": "Timetable not found"}), 404
+
+    lectures = timetable.get("lectures", {})
+    live_lecture = None
+    for day, slots in lectures.items():
+        for slot, lec in slots.items():
+            if lec.get("isLive"):
+                live_lecture = lec
+                break
+        if live_lecture:
+            break
+
+    return jsonify(live_lecture or {}), 200
+
+@app.route("/api/timetable/<branch>/<semester>/reset-live", methods=["PATCH"])
+def reset_live(branch, semester):
+    timetable = timetable_col.find_one({"branchCode": branch, "semester": semester})
+    if not timetable:
+        return jsonify({"error": "Timetable not found"}), 404
+
+    lectures = timetable.get("lectures", {})
+    for day, slots in lectures.items():
+        for slot, lec in slots.items():
+            lec["isLive"] = False
+
+    timetable_col.update_one(
+        {"branchCode": branch, "semester": semester},
+        {"$set": {"lectures": lectures}}
+    )
+    return jsonify({"message": "All lectures reset"}), 200
+    
 
 
 
@@ -327,6 +409,49 @@ def get_session_token(sessionId):
 
     except Exception as e:
         print("❌ Get token error:", e)
+        return jsonify({"error": "Internal server error"}), 500
+
+# ---------- Get all students by branch + semester ----------
+@app.route("/api/students/<branch>/<semester>", methods=["GET"])
+def get_students_by_branch_sem(branch, semester):
+    try:
+        branch = branch.strip()
+        semester = str(semester).strip()
+
+        students = list(users_col.find(
+            {"role": "student", "extra_info.branch": branch, "extra_info.sem": semester},
+            {"_id": 0, "password": 0}
+        ))
+
+        return jsonify(students), 200
+    except Exception as e:
+        print("❌ Get students error:", e)
+        return jsonify({"error": "Internal server error"}), 500
+
+
+# ---------- Get attendance for a branch + semester ----------
+@app.route("/api/attendance/<branch>/<semester>", methods=["GET"])
+def get_attendance_by_branch_sem(branch, semester):
+    try:
+        branch = branch.strip()
+        semester = str(semester).strip()
+
+        # Find all students of this branch + semester
+        students = list(users_col.find(
+            {"role": "student", "extra_info.branch": branch, "extra_info.sem": semester},
+            {"email": 1, "_id": 0}
+        ))
+        student_emails = [s["email"] for s in students]
+
+        # Fetch attendance records for these students
+        records = list(attendance_col.find(
+            {"student_email": {"$in": student_emails}},
+            {"_id": 0}
+        ))
+
+        return jsonify(records), 200
+    except Exception as e:
+        print("❌ Get attendance branch/sem error:", e)
         return jsonify({"error": "Internal server error"}), 500
 
 # ---------- Verify scanned QR and mark attendance ----------
