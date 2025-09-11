@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import os, bcrypt, jwt, datetime, certifi
 import secrets
 from bson.objectid import ObjectId
+import re
 
 # ----------------- Load env -----------------
 load_dotenv()
@@ -19,14 +20,12 @@ app.config["SECRET_KEY"] = SECRET_KEY
 # This allows any frontend origin (quick fix)
 CORS(app, supports_credentials=True)
 
-
-
-
 # ----------------- MongoDB connection -----------------
 try:
     client = MongoClient(
         MONGO_URI,
-        serverSelectionTimeoutMS=10000  # 10 second timeout
+        serverSelectionTimeoutMS=10000,  # 10 second timeout
+        tlsCAFile=certifi.where()
     )
     # Test the connection
     client.admin.command("ping")
@@ -39,7 +38,7 @@ try:
     attendance_col = db["attendance"]
 
     print("✅ MongoDB connected successfully")
-except errors.ServerSelectionTimeoutError as e:
+except Exception as e:
     print("❌ MongoDB connection error:", e)
     # Define collections as None to prevent NameError
     users_col = timetable_col = sessions_col = attendance_col = None
@@ -47,7 +46,7 @@ except errors.ServerSelectionTimeoutError as e:
 
 # ----------------- Auto-create admin if not exists -----------------
 for admin_email in ADMIN_EMAILS:
-    if not users_col.find_one({"email": admin_email}):
+    if users_col and not users_col.find_one({"email": admin_email}):
         hashed_pw = bcrypt.hashpw(ADMIN_PASSWORD.encode("utf-8"), bcrypt.gensalt())
         users_col.insert_one({
             "name": "Super Admin",
@@ -57,12 +56,18 @@ for admin_email in ADMIN_EMAILS:
         })
         print(f"✅ Admin created: {admin_email} / {ADMIN_PASSWORD}")
 
+# ----------------- Helper Functions -----------------
+def normalize_string(text):
+    """Normalize string for comparison"""
+    if not text:
+        return ""
+    return str(text).strip().lower()
+
 # ----------------- Routes -----------------
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"message": "Backend is running"}), 200
 
-# ---------- Login ----------
 # ---------- Login ----------
 @app.route("/api/login", methods=["POST"])
 def login():
@@ -90,7 +95,7 @@ def login():
             "name": user.get("name"),
             "email": user.get("email"),
             "role": user.get("role", "student"),
-            "extra_info": user.get("extra_info", {})  # ✅ add this
+            "extra_info": user.get("extra_info", {})
         }
 
         return jsonify({"user": user_data, "token": token}), 200
@@ -177,54 +182,31 @@ def enroll_user():
         return jsonify({"error": "Internal server error"}), 500
 
 # ---------- Timetable Routes ----------
-# ---------- Timetable Routes ----------
 
-# Get all branch+semester timetables (for admin dashboard dropdown)
-# ---------- Get all branch+semester timetables ----------
+# Get all timetables
 @app.route("/api/timetables", methods=["GET"])
 def get_all_timetables():
     try:
-        # Return full lectures object, not just branch/semester
         timetables = list(timetable_col.find({}, {"_id": 0}))
-        # Ensure isLive exists for each lecture
+        
+        # Ensure isLive exists for each lecture and add IDs
         for t in timetables:
             lectures = t.get("lectures", {})
             for day, slots in lectures.items():
                 for slot, lec in slots.items():
-                    if "isLive" not in lec:
-                        lec["isLive"] = False
+                    if lec:  # Only process if lecture exists
+                        if "isLive" not in lec:
+                            lec["isLive"] = False
+                        # Add a unique ID for each lecture
+                        if "id" not in lec:
+                            lec["id"] = f"{t['branchCode']}-{t['semester']}-{day}-{slot}"
+        
         return jsonify(timetables), 200
     except Exception as e:
         print("❌ Get all timetables error:", e)
         return jsonify({"error": "Internal server error"}), 500
 
-
-@app.route("/api/timetable/<branch>/<semester>/live", methods=["PATCH"])
-def set_live_lecture(branch, semester):
-    data = request.json
-    lecture_id = data.get("lectureId")
-    if not lecture_id:
-        return jsonify({"error": "Missing lectureId"}), 400
-
-    timetable = timetable_col.find_one({"branchCode": branch, "semester": semester})
-    if not timetable:
-        return jsonify({"error": "Timetable not found"}), 404
-
-    lectures = timetable.get("lectures", {})
-    for day, slots in lectures.items():
-        for slot, lec in slots.items():
-            lec["isLive"] = (lec.get("id") == lecture_id)
-
-    timetable_col.update_one(
-        {"branchCode": branch, "semester": semester},
-        {"$set": {"lectures": lectures}}
-    )
-
-    return jsonify({"message": "Lecture live status updated"}), 200
-
-
-
-# ---------- Get timetable by branch + semester ----------
+# Get timetable by branch + semester
 @app.route("/api/timetable/<branch>/<semester>", methods=["GET"])
 def get_timetable_by_branch_sem(branch, semester):
     try:
@@ -242,13 +224,24 @@ def get_timetable_by_branch_sem(branch, semester):
 
         if not timetable:
             return jsonify({"error": "Timetable not found"}), 404
+        
+        # Ensure isLive exists for each lecture and add IDs
+        lectures = timetable.get("lectures", {})
+        for day, slots in lectures.items():
+            for slot, lec in slots.items():
+                if lec:  # Only process if lecture exists
+                    if "isLive" not in lec:
+                        lec["isLive"] = False
+                    # Add a unique ID for each lecture
+                    if "id" not in lec:
+                        lec["id"] = f"{timetable['branchCode']}-{timetable['semester']}-{day}-{slot}"
+        
         return jsonify(timetable), 200
     except Exception as e:
         print("❌ Get timetable error:", e)
         return jsonify({"error": "Internal server error"}), 500
 
-
-# ---------- Create or update timetable ----------
+# Create or update timetable
 @app.route("/api/timetable", methods=["POST"])
 def create_or_update_timetable():
     try:
@@ -282,49 +275,99 @@ def create_or_update_timetable():
     except Exception as e:
         print("❌ Create/Update timetable error:", e)
         return jsonify({"error": "Internal server error"}), 500
-    
+
+# Set a lecture as live
+@app.route("/api/timetable/<branch>/<semester>/live", methods=["PATCH"])
+def set_live_lecture(branch, semester):
+    try:
+        data = request.json
+        lecture_id = data.get("lectureId")
+        if not lecture_id:
+            return jsonify({"error": "Missing lectureId"}), 400
+
+        timetable = timetable_col.find_one({"branchCode": branch, "semester": semester})
+        if not timetable:
+            return jsonify({"error": "Timetable not found"}), 404
+
+        lectures = timetable.get("lectures", {})
+        lecture_found = False
+        
+        # First reset all lectures to not live
+        for day, slots in lectures.items():
+            for slot, lec in slots.items():
+                if lec:  # Only process if lecture exists
+                    lec["isLive"] = False
+                    # Check if this is the lecture we want to set as live
+                    if lec.get("id") == lecture_id:
+                        lec["isLive"] = True
+                        lecture_found = True
+
+        if not lecture_found:
+            return jsonify({"error": "Lecture not found in timetable"}), 404
+
+        timetable_col.update_one(
+            {"branchCode": branch, "semester": semester},
+            {"$set": {"lectures": lectures}}
+        )
+
+        return jsonify({"message": "Lecture live status updated"}), 200
+    except Exception as e:
+        print("❌ Set live lecture error:", e)
+        return jsonify({"error": "Internal server error"}), 500
+
+# Get live lecture for a branch + semester
 @app.route("/api/timetable/<branch>/<semester>/live", methods=["GET"])
 def get_live_lecture(branch, semester):
-    timetable = timetable_col.find_one(
-        {"branchCode": branch, "semester": semester},
-        {"_id": 0}
-    )
-    if not timetable:
-        return jsonify({"error": "Timetable not found"}), 404
+    try:
+        timetable = timetable_col.find_one(
+            {"branchCode": branch, "semester": semester},
+            {"_id": 0}
+        )
+        if not timetable:
+            return jsonify({"error": "Timetable not found"}), 404
 
-    lectures = timetable.get("lectures", {})
-    live_lecture = None
-    for day, slots in lectures.items():
-        for slot, lec in slots.items():
-            if lec.get("isLive"):
-                live_lecture = lec
+        lectures = timetable.get("lectures", {})
+        live_lecture = None
+        
+        for day, slots in lectures.items():
+            for slot, lec in slots.items():
+                if lec and lec.get("isLive"):  # Only process if lecture exists and is live
+                    live_lecture = lec.copy()  # Create a copy to avoid modifying original
+                    live_lecture["day"] = day
+                    live_lecture["slot"] = slot
+                    break
+            if live_lecture:
                 break
-        if live_lecture:
-            break
 
-    return jsonify(live_lecture or {}), 200
+        return jsonify(live_lecture or {}), 200
+    except Exception as e:
+        print("❌ Get live lecture error:", e)
+        return jsonify({"error": "Internal server error"}), 500
 
+# Reset all live lectures for a branch + semester
 @app.route("/api/timetable/<branch>/<semester>/reset-live", methods=["PATCH"])
 def reset_live(branch, semester):
-    timetable = timetable_col.find_one({"branchCode": branch, "semester": semester})
-    if not timetable:
-        return jsonify({"error": "Timetable not found"}), 404
+    try:
+        timetable = timetable_col.find_one({"branchCode": branch, "semester": semester})
+        if not timetable:
+            return jsonify({"error": "Timetable not found"}), 404
 
-    lectures = timetable.get("lectures", {})
-    for day, slots in lectures.items():
-        for slot, lec in slots.items():
-            lec["isLive"] = False
+        lectures = timetable.get("lectures", {})
+        for day, slots in lectures.items():
+            for slot, lec in slots.items():
+                if lec:  # Only process if lecture exists
+                    lec["isLive"] = False
 
-    timetable_col.update_one(
-        {"branchCode": branch, "semester": semester},
-        {"$set": {"lectures": lectures}}
-    )
-    return jsonify({"message": "All lectures reset"}), 200
-    
+        timetable_col.update_one(
+            {"branchCode": branch, "semester": semester},
+            {"$set": {"lectures": lectures}}
+        )
+        return jsonify({"message": "All lectures reset"}), 200
+    except Exception as e:
+        print("❌ Reset live error:", e)
+        return jsonify({"error": "Internal server error"}), 500
 
-
-
-# ---------- Get All Users (optional for admin) ----------
+# ---------- Get All Users ----------
 @app.route("/api/users", methods=["GET"])
 def get_users():
     try:
@@ -334,14 +377,13 @@ def get_users():
         print("❌ Get users error:", e)
         return jsonify({"error": "Internal server error"}), 500
     
-    
+# ---------- Session Management ----------
 def _generate_token_and_expiry(ttl_seconds=45):
     token = secrets.token_urlsafe(16)
     expiry = datetime.datetime.utcnow() + datetime.timedelta(seconds=ttl_seconds)
     return token, expiry
 
-# ---------- Create session (faculty starts a lecture) ----------
-# Request body: { "sessionId": "<optional client id>", "faculty_email": "...", "meta": {...} }
+# Create session (faculty starts a lecture)
 @app.route("/api/session/create", methods=["POST"])
 def create_session():
     try:
@@ -350,7 +392,7 @@ def create_session():
         if not faculty_email:
             return jsonify({"error": "Missing faculty email"}), 400
 
-        # Optionally verify user is faculty/admin
+        # Verify user is faculty/admin
         user = users_col.find_one({"email": faculty_email})
         if not user or user.get("role") not in ("faculty", "admin"):
             return jsonify({"error": "Unauthorized"}), 403
@@ -373,8 +415,7 @@ def create_session():
         print("❌ Create session error:", e)
         return jsonify({"error": "Internal server error"}), 500
 
-# ---------- Get current token for a session (rotates if expired) ----------
-# GET /api/session/<sessionId>/token
+# Get current token for a session
 @app.route("/api/session/<sessionId>/token", methods=["GET"])
 def get_session_token(sessionId):
     try:
@@ -383,7 +424,7 @@ def get_session_token(sessionId):
         if not caller:
             return jsonify({"error": "Missing caller email header"}), 400
 
-        # Verify caller is faculty/admin for this session (optional)
+        # Verify caller is faculty/admin for this session
         session = sessions_col.find_one({"sessionId": sessionId})
         if not session:
             return jsonify({"error": "Session not found"}), 404
@@ -411,7 +452,7 @@ def get_session_token(sessionId):
         print("❌ Get token error:", e)
         return jsonify({"error": "Internal server error"}), 500
 
-# ---------- Get all students by branch + semester ----------
+# ---------- Student Management ----------
 @app.route("/api/students/<branch>/<semester>", methods=["GET"])
 def get_students_by_branch_sem(branch, semester):
     try:
@@ -428,8 +469,7 @@ def get_students_by_branch_sem(branch, semester):
         print("❌ Get students error:", e)
         return jsonify({"error": "Internal server error"}), 500
 
-
-# ---------- Get attendance for a branch + semester ----------
+# ---------- Attendance Management ----------
 @app.route("/api/attendance/<branch>/<semester>", methods=["GET"])
 def get_attendance_by_branch_sem(branch, semester):
     try:
@@ -454,11 +494,7 @@ def get_attendance_by_branch_sem(branch, semester):
         print("❌ Get attendance branch/sem error:", e)
         return jsonify({"error": "Internal server error"}), 500
 
-# ---------- Verify scanned QR and mark attendance ----------
-# POST /api/attendance/scan
-# Body: { "qrValue": "<sessionId>::<token>" }
-# Header: X-User-Email: student's email
-# Get attendance for a student
+# Get attendance for a specific student
 @app.route("/api/attendance/<student_email>", methods=["GET"])
 def get_attendance(student_email):
     try:
@@ -473,6 +509,7 @@ def get_attendance(student_email):
         print("❌ Get attendance error:", e)
         return jsonify({"error": "Internal server error"}), 500
 
+# Process QR code scan for attendance
 @app.route("/api/attendance/scan", methods=["POST"])
 def attendance_scan():
     try:
@@ -483,14 +520,15 @@ def attendance_scan():
         if not qr_value or not student_email:
             return jsonify({"error": "Missing qrValue or student email"}), 400
 
-        # parse qrValue. We expect "sessionId::token"
+        # Parse QR value (format: sessionId::token)
         parts = qr_value.split("::")
         if len(parts) != 2:
             return jsonify({"error": "Invalid QR format"}), 400
 
-        sessionId, token = parts[0], parts[1]
+        session_id, token = parts[0], parts[1]
 
-        session = sessions_col.find_one({"sessionId": sessionId, "active": True})
+        # Find active session
+        session = sessions_col.find_one({"sessionId": session_id, "active": True})
         if not session:
             return jsonify({"error": "Session not active or not found"}), 404
 
@@ -498,36 +536,44 @@ def attendance_scan():
         stored_token = session.get("current_token")
         token_expiry = session.get("token_expiry")
 
-        # Basic checks
+        # Validate token
         if not stored_token or not token_expiry or token_expiry <= now:
             return jsonify({"error": "Token expired"}), 400
 
         if token != stored_token:
             return jsonify({"error": "Invalid or outdated token"}), 400
 
-        # Verify student exists and role is student
+        # Verify student exists
         student = users_col.find_one({"email": student_email})
         if not student or student.get("role") != "student":
             return jsonify({"error": "Student not found or unauthorized"}), 403
 
-        # Avoid duplicate marking
-        already = attendance_col.find_one({"sessionId": sessionId, "student_email": student_email})
-        if already:
-            return jsonify({"message": "Attendance already recorded"}), 200
-
-        attendance_col.insert_one({
-            "sessionId": sessionId,
+        # Check if attendance already recorded for this session today
+        today_start = datetime.datetime(now.year, now.month, now.day)
+        today_end = today_start + datetime.timedelta(days=1)
+        
+        existing_attendance = attendance_col.find_one({
+            "sessionId": session_id,
             "student_email": student_email,
-            "timestamp": now
+            "timestamp": {"$gte": today_start, "$lt": today_end}
+        })
+        
+        if existing_attendance:
+            return jsonify({"message": "Attendance already recorded for today"}), 200
+
+        # Record attendance
+        attendance_col.insert_one({
+            "sessionId": session_id,
+            "student_email": student_email,
+            "timestamp": now,
+            "subject": session.get("meta", {}).get("subject", "Unknown")
         })
 
-        return jsonify({"message": "Attendance marked"}), 201
+        return jsonify({"message": "Attendance marked successfully"}), 201
 
     except Exception as e:
         print("❌ Attendance scan error:", e)
         return jsonify({"error": "Internal server error"}), 500
-    
-        
 
 # ----------------- Run -----------------
 if __name__ == "__main__":
